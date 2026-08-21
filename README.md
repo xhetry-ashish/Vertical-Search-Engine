@@ -7,6 +7,7 @@ Current progress covers the first three methods:
 1. Crawl Coventry Pure Portal pages for the Centre for Healthcare and Community Transformation.
 2. Extract publication and author metadata from crawled pages.
 3. Store publication and author records in MongoDB.
+4. View crawled publication, author, and crawl-run records in a Streamlit UI.
 
 ## Project Structure
 
@@ -15,6 +16,7 @@ search_engine/
   config.py
   models.py
   main.py
+  app.py
   crawler/
     polite_client.py
     parsers.py
@@ -64,6 +66,22 @@ To check only MongoDB connectivity:
 python3 -m search_engine.main check-db
 ```
 
+## Run the Streamlit UI
+
+From inside the `Final Assignment` folder:
+
+```bash
+streamlit run search_engine/app.py
+```
+
+The UI reads from MongoDB and shows:
+
+```text
+publication records
+author records
+crawl run history
+```
+
 ## MongoDB Collections
 
 The code creates and updates these collections:
@@ -87,6 +105,7 @@ git add "Final Assignment"
 git commit -m "chore: initialize search engine project"
 git commit -m "feat: add polite Pure Portal crawler and metadata parser"
 git commit -m "feat: store crawled publication records in MongoDB"
+git commit -m "feat: add Streamlit interface for viewing crawled records"
 ```
 
 If you want separate commits exactly, stage only the related files for each commit.
