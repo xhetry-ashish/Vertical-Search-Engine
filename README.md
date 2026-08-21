@@ -1,111 +1,75 @@
-# Coventry Pure Portal Vertical Search Engine
+# Coventry Pure Portal Search Engine
 
-This project implements Task 1 of the Information Retrieval final assignment.
+Task 1 project for the Information Retrieval final assignment.
 
-Current progress covers the first three methods:
-
-1. Crawl Coventry Pure Portal pages for the Centre for Healthcare and Community Transformation.
-2. Extract publication and author metadata from crawled pages.
-3. Store publication and author records in MongoDB.
-4. View crawled publication, author, and crawl-run records in a Streamlit UI.
-
-## Project Structure
-
-```text
-search_engine/
-  config.py
-  models.py
-  main.py
-  app.py
-  crawler/
-    polite_client.py
-    parsers.py
-    pureportal_crawler.py
-  database/
-    mongo.py
-    repositories.py
-tests/
-  test_steps_1_to_3.py
-```
+The system crawls Coventry University's Centre for Healthcare and Community Transformation Pure Portal records, stores publication data in MongoDB, builds a custom inverted index, ranks results using TF-IDF cosine similarity, and shows results in a Streamlit UI.
 
 ## Setup
-
-Create and activate a virtual environment, then install dependencies:
-
-```bash
-pip install -r requirements.txt
-```
-
-Copy the example environment file:
-
-```bash
-cp .env.example .env
-```
-
-Then edit `.env` and set your own `MONGO_URI`.
-
-Do not commit `.env` to GitHub.
-
-## Run Step 1 to Step 3
 
 From inside the `Final Assignment` folder:
 
 ```bash
-python3 -m search_engine.main crawl --max-listing-pages 2 --max-publications 10
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env
 ```
 
-To test crawling and extraction without saving to MongoDB:
+Edit `.env` and set `MONGO_URI`.
 
-```bash
-python3 -m search_engine.main crawl --max-listing-pages 1 --max-publications 5 --dry-run
-```
+Do not commit `.env`.
 
-To check only MongoDB connectivity:
+## Run
+
+Check MongoDB:
 
 ```bash
 python3 -m search_engine.main check-db
 ```
 
-## Run the Streamlit UI
+Crawl publications, save to MongoDB, and rebuild the index:
 
-From inside the `Final Assignment` folder:
+```bash
+python3 -m search_engine.main crawl --max-listing-pages 1 --max-publications 10
+```
+
+Build the index manually:
+
+```bash
+python3 -m search_engine.main build-index
+```
+
+Search from command line:
+
+```bash
+python3 -m search_engine.main search "mental wellbeing stress" --limit 5
+```
+
+Run the UI:
 
 ```bash
 streamlit run search_engine/app.py
 ```
 
-The UI reads from MongoDB and shows:
+Open:
 
 ```text
-publication records
-author records
-crawl run history
+http://localhost:8501
 ```
 
-## MongoDB Collections
+## Main Features
 
-The code creates and updates these collections:
+- polite crawler with `robots.txt` checking
+- publication and author metadata extraction
+- MongoDB storage
+- text preprocessing
+- custom inverted index
+- TF-IDF vector scoring
+- cosine similarity ranking
+- Streamlit search and records viewer
 
-```text
-publications
-authors
-crawl_runs
-```
-
-`publications` stores extracted publication records, including title, year, source, publication URL, author links, and searchable text.
-
-`authors` stores author profile data and references back to publication records.
-
-`crawl_runs` stores crawl history, including visited page count, saved record count, blocked URLs, and failed URLs.
-
-## Suggested Commits So Far
+## Tests
 
 ```bash
-git add "Final Assignment"
-git commit -m "chore: initialize search engine project"
-git commit -m "feat: add polite Pure Portal crawler and metadata parser"
-git commit -m "feat: store crawled publication records in MongoDB"
-git commit -m "feat: add Streamlit interface for viewing crawled records"
+python3 -m unittest discover -s tests
 ```
-
-If you want separate commits exactly, stage only the related files for each commit.

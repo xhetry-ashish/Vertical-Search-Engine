@@ -6,6 +6,8 @@ import re
 
 from pymongo.database import Database
 
+from search_engine.indexer.inverted_index import IndexBuildResult
+from search_engine.indexer.ranking import rank_document_vectors
 from search_engine.models import CrawlRun, Publication, utc_now
 
 
@@ -141,3 +143,119 @@ class PublicationRepository:
             .limit(limit)
         )
         return list(cursor)
+
+    def list_publications_for_index(self) -> list[dict]:
+        cursor = self.db.publications.find(
+            {},
+            {
+                "_id": 0,
+                "publication_key": 1,
+                "title": 1,
+                "publication_url": 1,
+                "authors": 1,
+                "publication_year": 1,
+                "source": 1,
+                "publication_type": 1,
+                "abstract": 1,
+                "searchable_text": 1,
+            },
+        )
+        return list(cursor)
+
+
+class IndexRepository:
+    """MongoDB repository for custom inverted index and TF-IDF vectors."""
+
+    INDEX_NAME = "publication_index"
+
+    def __init__(self, db: Database):
+        self.db = db
+        self.ensure_indexes()
+
+    def ensure_indexes(self) -> None:
+        self.db.inverted_index.create_index("term", unique=True)
+        self.db.document_vectors.create_index("publication_key", unique=True)
+        self.db.index_metadata.create_index("name", unique=True)
+
+    def save_index(self, index_result: IndexBuildResult) -> None:
+        self.db.inverted_index.delete_many({})
+        self.db.document_vectors.delete_many({})
+
+        if index_result.inverted_index:
+            self.db.inverted_index.insert_many(list(index_result.inverted_index.values()))
+        if index_result.document_vectors:
+            self.db.document_vectors.insert_many(index_result.document_vectors)
+
+        self.db.index_metadata.update_one(
+            {"name": self.INDEX_NAME},
+            {
+                "$set": {
+                    "name": self.INDEX_NAME,
+                    "document_count": index_result.document_count,
+                    "vocabulary_size": index_result.vocabulary_size,
+                    "indexed_at": utc_now(),
+                }
+            },
+            upsert=True,
+        )
+
+    def get_index_metadata(self) -> dict | None:
+        return self.db.index_metadata.find_one({"name": self.INDEX_NAME}, {"_id": 0})
+
+    def count_terms(self) -> int:
+        return self.db.inverted_index.count_documents({})
+
+    def count_document_vectors(self) -> int:
+        return self.db.document_vectors.count_documents({})
+
+    def get_idf_weights(self) -> dict[str, float]:
+        cursor = self.db.inverted_index.find({}, {"_id": 0, "term": 1, "idf": 1})
+        return {document["term"]: float(document["idf"]) for document in cursor}
+
+    def list_document_vectors(self) -> list[dict]:
+        cursor = self.db.document_vectors.find(
+            {},
+            {
+                "_id": 0,
+                "publication_key": 1,
+                "title": 1,
+                "publication_url": 1,
+                "publication_year": 1,
+                "authors": 1,
+                "vector": 1,
+            },
+        )
+        return list(cursor)
+
+    def find_publications_by_keys(self, publication_keys: list[str]) -> dict[str, dict]:
+        if not publication_keys:
+            return {}
+
+        cursor = self.db.publications.find(
+            {"publication_key": {"$in": publication_keys}},
+            {"searchable_text": 0, "full_text": 0},
+        )
+        return {document["publication_key"]: document for document in cursor}
+
+    def search(self, query: str, limit: int = 10) -> list[dict]:
+        idf_weights = self.get_idf_weights()
+        document_vectors = self.list_document_vectors()
+        ranked_matches = rank_document_vectors(query, document_vectors, idf_weights, limit=limit)
+        publications_by_key = self.find_publications_by_keys(
+            [match["publication_key"] for match in ranked_matches]
+        )
+
+        results = []
+        for match in ranked_matches:
+            publication = publications_by_key.get(match["publication_key"])
+            if not publication:
+                continue
+            results.append(
+                {
+                    **publication,
+                    "score": match["score"],
+                    "matched_terms": match["matched_terms"],
+                    "query_tokens": match["query_tokens"],
+                }
+            )
+        return results

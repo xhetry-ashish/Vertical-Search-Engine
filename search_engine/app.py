@@ -15,7 +15,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from search_engine.config import SearchEngineConfig
 from search_engine.database.mongo import MongoConnection
-from search_engine.database.repositories import PublicationRepository
+from search_engine.database.repositories import IndexRepository, PublicationRepository
 
 
 SORT_OPTIONS = ["newest", "oldest", "title", "recently crawled"]
@@ -59,6 +59,7 @@ def load_dashboard_data(
     try:
         connection.ping()
         repository = PublicationRepository(connection.db)
+        index_repository = IndexRepository(connection.db)
         publications = repository.list_publications(
             year=year,
             author_query=author_query or None,
@@ -71,6 +72,9 @@ def load_dashboard_data(
             "publication_count": repository.count_publications(),
             "author_count": repository.count_authors(),
             "crawl_run_count": repository.count_crawl_runs(),
+            "index_term_count": index_repository.count_terms(),
+            "index_document_count": index_repository.count_document_vectors(),
+            "index_metadata": index_repository.get_index_metadata(),
             "years": repository.list_available_years(),
             "publications": publications,
             "authors": repository.list_authors(limit=100),
@@ -80,15 +84,28 @@ def load_dashboard_data(
         connection.close()
 
 
+@st.cache_data(ttl=60)
+def load_search_results(query: str, limit: int, refresh_marker: int) -> list[dict]:
+    config = SearchEngineConfig.from_env()
+    connection = MongoConnection(config)
+    try:
+        connection.ping()
+        repository = IndexRepository(connection.db)
+        return repository.search(query, limit=limit)
+    finally:
+        connection.close()
+
+
 def render_metrics(data: dict) -> None:
     latest_run = data["crawl_runs"][0] if data["crawl_runs"] else {}
     latest_run_time = format_datetime(latest_run.get("finished_at"))
 
-    first, second, third, fourth = st.columns(4)
+    first, second, third, fourth, fifth = st.columns(5)
     first.metric("Publications", data["publication_count"])
     second.metric("Authors", data["author_count"])
     third.metric("Crawl Runs", data["crawl_run_count"])
-    fourth.metric("Latest Crawl", latest_run_time)
+    fourth.metric("Index Terms", data["index_term_count"])
+    fifth.metric("Latest Crawl", latest_run_time)
 
 
 def render_publication(publication: dict) -> None:
@@ -120,7 +137,6 @@ def render_publication(publication: dict) -> None:
 
 
 def render_publications(publications: list[dict]) -> None:
-    st.subheader("Publications")
     if not publications:
         st.info("No publication records match the selected filters.")
         return
@@ -129,8 +145,46 @@ def render_publications(publications: list[dict]) -> None:
         render_publication(publication)
 
 
+def render_search_result(publication: dict) -> None:
+    title = publication.get("title") or "Untitled publication"
+    publication_url = publication.get("publication_url")
+    score = publication.get("score", 0.0)
+    matched_terms = ", ".join(publication.get("matched_terms", [])) or "None"
+
+    if publication_url:
+        st.markdown(f"#### [{title}]({publication_url})")
+    else:
+        st.markdown(f"#### {title}")
+
+    source = publication.get("source") or publication.get("publication_type") or "No source recorded"
+    st.caption(f"{format_year(publication.get('publication_year'))} | {source}")
+    st.markdown(author_markdown(publication.get("authors", [])))
+    st.caption(f"Score: {score:.4f} | Matched terms: {matched_terms}")
+    st.divider()
+
+
+def render_search_tab(refresh_marker: int) -> None:
+    query = st.text_input("Search publications", placeholder="mental health stress")
+    limit = st.slider("Results", min_value=5, max_value=50, value=10, step=5)
+
+    if not query.strip():
+        return
+
+    try:
+        results = load_search_results(query.strip(), limit, refresh_marker)
+    except Exception as exc:
+        st.error(f"Search failed: {exc}")
+        return
+
+    if not results:
+        st.info("No ranked results found.")
+        return
+
+    for publication in results:
+        render_search_result(publication)
+
+
 def render_authors(authors: list[dict]) -> None:
-    st.subheader("Authors")
     if not authors:
         st.info("No author records are stored yet.")
         return
@@ -150,7 +204,6 @@ def render_authors(authors: list[dict]) -> None:
 
 
 def render_crawl_runs(crawl_runs: list[dict]) -> None:
-    st.subheader("Crawl Runs")
     if not crawl_runs:
         st.info("No crawl runs are stored yet.")
         return
@@ -231,9 +284,11 @@ def main() -> None:
     st.caption(f"Database: {data['database_name']}")
     render_metrics(data)
 
-    publications_tab, authors_tab, crawl_runs_tab = st.tabs(
-        ["Publications", "Authors", "Crawl Runs"]
+    search_tab, publications_tab, authors_tab, crawl_runs_tab = st.tabs(
+        ["Search", "Publications", "Authors", "Crawl Runs"]
     )
+    with search_tab:
+        render_search_tab(st.session_state.refresh_marker)
     with publications_tab:
         render_publications(data["publications"])
     with authors_tab:
