@@ -172,6 +172,18 @@ def extract_publication_urls(html: str, base_url: str) -> list[str]:
     return list(urls.keys())
 
 
+def extract_person_urls(html: str, base_url: str) -> list[str]:
+    soup = make_soup(html)
+    urls = OrderedDict()
+
+    for link in soup.find_all("a", href=True):
+        absolute_url = canonical_content_url(urljoin(base_url, link["href"]))
+        if is_person_url(absolute_url):
+            urls[absolute_url] = None
+
+    return list(urls.keys())
+
+
 def extract_listing_urls(html: str, base_url: str, organisation_path: str) -> list[str]:
     soup = make_soup(html)
     urls = OrderedDict()

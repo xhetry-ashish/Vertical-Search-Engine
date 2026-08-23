@@ -11,6 +11,7 @@ from urllib.parse import urljoin, urlparse
 from search_engine.config import SearchEngineConfig
 from search_engine.crawler.parsers import (
     extract_listing_urls,
+    extract_person_urls,
     merge_publication_data,
     parse_publication_page,
     parse_publication_summaries,
@@ -27,6 +28,7 @@ class CrawlerOutput:
     failed_urls: list[dict]
     started_at: datetime
     finished_at: datetime
+    profile_pages_visited: int = 0
 
 
 class PurePortalCrawler:
@@ -42,9 +44,11 @@ class PurePortalCrawler:
     def crawl_publications(
         self,
         max_listing_pages: int | None = None,
+        max_profile_pages: int | None = None,
         max_publications: int | None = None,
     ) -> CrawlerOutput:
         max_listing_pages = max_listing_pages or self.config.max_listing_pages
+        max_profile_pages = max_profile_pages if max_profile_pages is not None else self.config.max_profile_pages
         max_publications = max_publications or self.config.max_publications
         started_at = utc_now()
 
@@ -54,6 +58,7 @@ class PurePortalCrawler:
         skipped_by_robots: list[str] = []
         failed_urls: list[dict] = []
         summaries_by_url: OrderedDict[str, Publication] = OrderedDict()
+        profile_urls: OrderedDict[str, None] = OrderedDict()
 
         while listing_queue and len(visited_listings) < max_listing_pages:
             listing_url = listing_queue.popleft()
@@ -77,6 +82,9 @@ class PurePortalCrawler:
             for publication in parse_publication_summaries(result.html, result.url):
                 summaries_by_url.setdefault(publication.publication_url, publication)
 
+            for profile_url in extract_person_urls(result.html, result.url):
+                profile_urls.setdefault(profile_url, None)
+
             for discovered_url in extract_listing_urls(
                 result.html,
                 result.url,
@@ -85,6 +93,14 @@ class PurePortalCrawler:
                 if discovered_url not in visited_listings and discovered_url not in queued_listings:
                     listing_queue.append(discovered_url)
                     queued_listings.add(discovered_url)
+
+        visited_profiles = self._crawl_profile_pages(
+            profile_urls=list(profile_urls.keys()),
+            summaries_by_url=summaries_by_url,
+            skipped_by_robots=skipped_by_robots,
+            failed_urls=failed_urls,
+            max_profile_pages=max_profile_pages,
+        )
 
         selected_summaries = list(summaries_by_url.values())[:max_publications]
         publications: list[Publication] = []
@@ -106,12 +122,42 @@ class PurePortalCrawler:
 
         return CrawlerOutput(
             publications=publications,
-            pages_visited=len(visited_listings),
+            pages_visited=len(visited_listings) + visited_profiles,
             skipped_by_robots=skipped_by_robots,
             failed_urls=failed_urls,
             started_at=started_at,
             finished_at=utc_now(),
+            profile_pages_visited=visited_profiles,
         )
+
+    def _crawl_profile_pages(
+        self,
+        profile_urls: list[str],
+        summaries_by_url: OrderedDict[str, Publication],
+        skipped_by_robots: list[str],
+        failed_urls: list[dict],
+        max_profile_pages: int,
+    ) -> int:
+        visited_profiles = 0
+        for profile_url in profile_urls[:max_profile_pages]:
+            try:
+                result = self.client.fetch(profile_url)
+            except RobotsBlockedError as exc:
+                skipped_by_robots.append(profile_url)
+                logging.info("%s", exc)
+                continue
+            except FetchError as exc:
+                failed_urls.append({"url": profile_url, "error": str(exc)})
+                logging.warning("%s", exc)
+                continue
+
+            visited_profiles += 1
+            logging.info("Crawled profile page: %s", result.url)
+
+            for publication in parse_publication_summaries(result.html, result.url):
+                summaries_by_url.setdefault(publication.publication_url, publication)
+
+        return visited_profiles
 
     def build_crawl_run(self, output: CrawlerOutput, publications_saved: int) -> CrawlRun:
         return CrawlRun(

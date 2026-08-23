@@ -53,7 +53,9 @@ class SearchEngineConfig:
     crawl_delay_seconds: float
     request_timeout_seconds: int
     max_listing_pages: int
+    max_profile_pages: int
     max_publications: int
+    scheduler_interval_days: int
     mongo_uri: str | None
     mongo_db_name: str
 
@@ -70,7 +72,9 @@ class SearchEngineConfig:
             crawl_delay_seconds=_get_float("CRAWL_DELAY_SECONDS", 2.0),
             request_timeout_seconds=_get_int("REQUEST_TIMEOUT_SECONDS", 20),
             max_listing_pages=_get_int("MAX_LISTING_PAGES", 3),
+            max_profile_pages=_get_int("MAX_PROFILE_PAGES", 8),
             max_publications=_get_int("MAX_PUBLICATIONS", 25),
+            scheduler_interval_days=_get_int("SCHEDULER_INTERVAL_DAYS", 7),
             mongo_uri=os.environ.get("MONGO_URI"),
             mongo_db_name=os.environ.get("MONGO_DB_NAME", "ir_vertical_search_engine"),
         )

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 import sys
 from typing import Any
@@ -16,14 +16,25 @@ if str(PROJECT_ROOT) not in sys.path:
 from search_engine.config import SearchEngineConfig
 from search_engine.database.mongo import MongoConnection
 from search_engine.database.repositories import IndexRepository, PublicationRepository
+from search_engine.scheduler.weekly_update import ScheduledUpdateResult, run_update_once
 
 
 SORT_OPTIONS = ["newest", "oldest", "title", "recently crawled"]
 
 
+def local_timezone():
+    return datetime.now().astimezone().tzinfo
+
+
+def to_local_datetime(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(local_timezone())
+
+
 def format_datetime(value: Any) -> str:
     if isinstance(value, datetime):
-        return value.strftime("%Y-%m-%d %H:%M")
+        return to_local_datetime(value).strftime("%Y-%m-%d %H:%M")
     if value:
         return str(value)
     return "Unknown"
@@ -47,11 +58,6 @@ def author_markdown(authors: list[dict]) -> str:
 
 @st.cache_data(ttl=60)
 def load_dashboard_data(
-    year: int | None,
-    author_query: str,
-    text_query: str,
-    sort_by: str,
-    limit: int,
     refresh_marker: int,
 ) -> dict:
     config = SearchEngineConfig.from_env()
@@ -60,13 +66,6 @@ def load_dashboard_data(
         connection.ping()
         repository = PublicationRepository(connection.db)
         index_repository = IndexRepository(connection.db)
-        publications = repository.list_publications(
-            year=year,
-            author_query=author_query or None,
-            text_query=text_query or None,
-            sort_by=sort_by,
-            limit=limit,
-        )
         return {
             "database_name": config.mongo_db_name,
             "publication_count": repository.count_publications(),
@@ -76,10 +75,34 @@ def load_dashboard_data(
             "index_document_count": index_repository.count_document_vectors(),
             "index_metadata": index_repository.get_index_metadata(),
             "years": repository.list_available_years(),
-            "publications": publications,
             "authors": repository.list_authors(limit=100),
             "crawl_runs": repository.list_crawl_runs(limit=10),
         }
+    finally:
+        connection.close()
+
+
+@st.cache_data(ttl=60)
+def load_publications(
+    year: int | None,
+    author_query: str,
+    text_query: str,
+    sort_by: str,
+    limit: int,
+    refresh_marker: int,
+) -> list[dict]:
+    config = SearchEngineConfig.from_env()
+    connection = MongoConnection(config)
+    try:
+        connection.ping()
+        repository = PublicationRepository(connection.db)
+        return repository.list_publications(
+            year=year,
+            author_query=author_query or None,
+            text_query=text_query or None,
+            sort_by=sort_by,
+            limit=limit,
+        )
     finally:
         connection.close()
 
@@ -105,7 +128,7 @@ def render_metrics(data: dict) -> None:
     second.metric("Authors", data["author_count"])
     third.metric("Crawl Runs", data["crawl_run_count"])
     fourth.metric("Index Terms", data["index_term_count"])
-    fifth.metric("Latest Crawl", latest_run_time)
+    fifth.metric("Latest Crawl (Local)", latest_run_time)
 
 
 def render_publication(publication: dict) -> None:
@@ -114,6 +137,8 @@ def render_publication(publication: dict) -> None:
     year = format_year(publication.get("publication_year"))
     source = publication.get("source") or publication.get("publication_type") or "No source recorded"
     authors = publication.get("authors", [])
+    publication_type = publication.get("publication_type")
+    published_date = publication.get("published_date")
 
     if publication_url:
         st.markdown(f"#### [{title}]({publication_url})")
@@ -123,8 +148,6 @@ def render_publication(publication: dict) -> None:
     st.caption(f"{year} | {source}")
     st.markdown(author_markdown(authors))
 
-    publication_type = publication.get("publication_type")
-    published_date = publication.get("published_date")
     if publication_type or published_date:
         details = []
         if publication_type:
@@ -145,18 +168,54 @@ def render_publications(publications: list[dict]) -> None:
         render_publication(publication)
 
 
+def render_publication_filters(years: list[int]) -> tuple[int | None, str, str, str, int]:
+    st.subheader("Browse Publications")
+
+    first, second, third = st.columns([1, 1, 2])
+    year_options = ["All years"] + years
+    selected_year = first.selectbox("Year", year_options)
+    sort_by = second.selectbox("Sort", SORT_OPTIONS)
+    limit = third.slider("Records", min_value=5, max_value=100, value=25, step=5)
+
+    fourth, fifth = st.columns(2)
+    author_query = fourth.text_input("Author")
+    text_query = fifth.text_input("Title or Source")
+
+    year = None if selected_year == "All years" else int(selected_year)
+    return year, author_query.strip(), text_query.strip(), sort_by, limit
+
+
+def render_publications_tab(years: list[int], refresh_marker: int) -> None:
+    year, author_query, text_query, sort_by, limit = render_publication_filters(years)
+
+    try:
+        publications = load_publications(
+            year=year,
+            author_query=author_query,
+            text_query=text_query,
+            sort_by=sort_by,
+            limit=limit,
+            refresh_marker=refresh_marker,
+        )
+    except Exception as exc:
+        st.error(f"Publication query failed: {exc}")
+        return
+
+    render_publications(publications)
+
+
 def render_search_result(publication: dict) -> None:
     title = publication.get("title") or "Untitled publication"
     publication_url = publication.get("publication_url")
     score = publication.get("score", 0.0)
     matched_terms = ", ".join(publication.get("matched_terms", [])) or "None"
+    source = publication.get("source") or publication.get("publication_type") or "No source recorded"
 
     if publication_url:
         st.markdown(f"#### [{title}]({publication_url})")
     else:
         st.markdown(f"#### {title}")
 
-    source = publication.get("source") or publication.get("publication_type") or "No source recorded"
     st.caption(f"{format_year(publication.get('publication_year'))} | {source}")
     st.markdown(author_markdown(publication.get("authors", [])))
     st.caption(f"Score: {score:.4f} | Matched terms: {matched_terms}")
@@ -164,6 +223,7 @@ def render_search_result(publication: dict) -> None:
 
 
 def render_search_tab(refresh_marker: int) -> None:
+    st.subheader("Search Publications")
     query = st.text_input("Search publications", placeholder="mental health stress")
     limit = st.slider("Results", min_value=5, max_value=50, value=10, step=5)
 
@@ -185,6 +245,7 @@ def render_search_tab(refresh_marker: int) -> None:
 
 
 def render_authors(authors: list[dict]) -> None:
+    st.subheader("Authors")
     if not authors:
         st.info("No author records are stored yet.")
         return
@@ -204,6 +265,7 @@ def render_authors(authors: list[dict]) -> None:
 
 
 def render_crawl_runs(crawl_runs: list[dict]) -> None:
+    st.subheader("Crawl History")
     if not crawl_runs:
         st.info("No crawl runs are stored yet.")
         return
@@ -212,7 +274,7 @@ def render_crawl_runs(crawl_runs: list[dict]) -> None:
     for crawl_run in crawl_runs:
         rows.append(
             {
-                "Finished At": format_datetime(crawl_run.get("finished_at")),
+                "Finished At (Local)": format_datetime(crawl_run.get("finished_at")),
                 "Status": crawl_run.get("status", "unknown"),
                 "Pages Visited": crawl_run.get("pages_visited", 0),
                 "Publications Found": crawl_run.get("publications_found", 0),
@@ -224,57 +286,90 @@ def render_crawl_runs(crawl_runs: list[dict]) -> None:
     st.dataframe(rows, hide_index=True, use_container_width=True)
 
 
-def render_sidebar(years: list[int]) -> tuple[int | None, str, str, str, int]:
-    st.sidebar.header("Filters")
-    year_options = ["All years"] + years
-    selected_year = st.sidebar.selectbox("Year", year_options)
-    author_query = st.sidebar.text_input("Author")
-    text_query = st.sidebar.text_input("Title or Source")
-    sort_by = st.sidebar.selectbox("Sort", SORT_OPTIONS)
-    limit = st.sidebar.slider("Records", min_value=5, max_value=100, value=25, step=5)
+def render_update_summary(result: ScheduledUpdateResult) -> None:
+    first, second, third, fourth = st.columns(4)
+    first.metric("Extracted", result.publications_extracted)
+    second.metric("Saved", result.publications_saved)
+    third.metric("Pages", result.pages_visited)
+    fourth.metric("Profiles", result.profile_pages_visited)
+    st.caption(result.index_message)
 
-    year = None if selected_year == "All years" else int(selected_year)
-    return year, author_query.strip(), text_query.strip(), sort_by, limit
+
+def render_scheduler_tab() -> None:
+    st.subheader("Scheduler")
+
+    last_result = st.session_state.get("last_crawl_update_result")
+    if last_result is not None:
+        st.success("Last scheduled update completed.")
+        render_update_summary(last_result)
+
+    st.caption("Run one crawler/index update from the GUI. The continuous weekly scheduler still runs from the terminal.")
+
+    first, second, third = st.columns(3)
+    max_listing_pages = first.number_input(
+        "Listing Pages",
+        min_value=1,
+        max_value=5,
+        value=1,
+        step=1,
+    )
+    max_profile_pages = second.number_input(
+        "Profile Pages",
+        min_value=0,
+        max_value=25,
+        value=8,
+        step=1,
+    )
+    max_publications = third.number_input(
+        "Publications",
+        min_value=1,
+        max_value=100,
+        value=25,
+        step=1,
+    )
+
+    if not st.button("Run Crawl Update", type="primary"):
+        return
+
+    with st.spinner("Crawling Pure Portal and rebuilding the search index..."):
+        result = run_update_once(
+            max_listing_pages=int(max_listing_pages),
+            max_profile_pages=int(max_profile_pages),
+            max_publications=int(max_publications),
+        )
+
+    st.session_state.last_crawl_update_result = result
+    st.cache_data.clear()
+    st.session_state.refresh_marker += 1
+    st.rerun()
+
+
+def render_crawl_runs_tab(crawl_runs: list[dict]) -> None:
+    left, right = st.columns([3, 1])
+    with left:
+        st.subheader("Crawl Runs")
+    with right:
+        if st.button("Refresh", use_container_width=True):
+            st.cache_data.clear()
+            st.session_state.refresh_marker += 1
+            st.rerun()
+
+    render_crawl_runs(crawl_runs)
 
 
 def main() -> None:
     st.set_page_config(
-        page_title="Coventry Pure Portal Records",
+        page_title="Coventry Pure Portal Search Engine",
         layout="wide",
     )
 
-    st.title("Coventry Pure Portal Records")
+    st.title("Coventry Pure Portal Search Engine")
 
     if "refresh_marker" not in st.session_state:
         st.session_state.refresh_marker = 0
 
     try:
-        initial_data = load_dashboard_data(
-            year=None,
-            author_query="",
-            text_query="",
-            sort_by="newest",
-            limit=1,
-            refresh_marker=st.session_state.refresh_marker,
-        )
-    except Exception as exc:
-        st.error(f"MongoDB connection failed: {exc}")
-        return
-
-    year, author_query, text_query, sort_by, limit = render_sidebar(initial_data["years"])
-
-    if st.sidebar.button("Refresh"):
-        st.cache_data.clear()
-        st.session_state.refresh_marker += 1
-        st.rerun()
-
-    try:
         data = load_dashboard_data(
-            year=year,
-            author_query=author_query,
-            text_query=text_query,
-            sort_by=sort_by,
-            limit=limit,
             refresh_marker=st.session_state.refresh_marker,
         )
     except Exception as exc:
@@ -284,17 +379,22 @@ def main() -> None:
     st.caption(f"Database: {data['database_name']}")
     render_metrics(data)
 
-    search_tab, publications_tab, authors_tab, crawl_runs_tab = st.tabs(
-        ["Search", "Publications", "Authors", "Crawl Runs"]
+    search_tab, publications_tab, authors_tab, crawl_runs_tab, scheduler_tab = st.tabs(
+        ["Search", "Publications", "Authors", "Crawl Runs", "Scheduler"]
     )
     with search_tab:
         render_search_tab(st.session_state.refresh_marker)
     with publications_tab:
-        render_publications(data["publications"])
+        render_publications_tab(data["years"], st.session_state.refresh_marker)
     with authors_tab:
         render_authors(data["authors"])
     with crawl_runs_tab:
-        render_crawl_runs(data["crawl_runs"])
+        render_crawl_runs_tab(data["crawl_runs"])
+    with scheduler_tab:
+        try:
+            render_scheduler_tab()
+        except Exception as exc:
+            st.error(f"Scheduler update failed: {exc}")
 
 
 if __name__ == "__main__":
