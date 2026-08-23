@@ -1,4 +1,6 @@
 beautifulsoup4>=4.12
+numpy>=1.23
+pandas>=1.4
 pymongo>=4.6
 requests>=2.31
 streamlit>=1.36

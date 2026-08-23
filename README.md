@@ -1,8 +1,10 @@
-# Coventry Pure Portal Search Engine
+# Information Retrieval Search and Clustering System
 
-Task 1 project for the Information Retrieval final assignment.
+Information Retrieval final assignment project.
 
-The system crawls Coventry University's Centre for Healthcare and Community Transformation Pure Portal records, stores publication data in MongoDB, builds a custom inverted index, ranks results using TF-IDF cosine similarity, and shows results in a Streamlit UI.
+Task 1 crawls Coventry University's Centre for Healthcare and Community Transformation Pure Portal records, stores publication data in MongoDB, builds a custom inverted index, ranks results using TF-IDF cosine similarity, and shows results in a Streamlit UI.
+
+Task 2 clusters a 135-document sample dataset from Economics, Entertainment, and Politics into exactly 3 clusters using TF-IDF and K-Means, then assigns a new user-entered document to a cluster. The clustering code is implemented in the project without scikit-learn so the TF-IDF and K-Means process is visible for coursework explanation.
 
 ## Setup
 
@@ -69,7 +71,9 @@ Open:
 http://localhost:8501
 ```
 
-In the UI, open the `Scheduler` tab and click `Run Crawl Update` to crawl more records, save them to MongoDB, and rebuild the search index.
+In the UI, open the `Scheduler` tab and click `Run Crawl Update Now` to crawl more records, save them to MongoDB, and rebuild the search index. You can also choose a local date/time and click `Schedule Crawl Update`.
+
+For Task 2, open the `Document Clustering` tab to view clusters and assign a new document.
 
 ## Main Features
 
@@ -82,6 +86,8 @@ In the UI, open the `Scheduler` tab and click `Run Crawl Update` to crawl more r
 - cosine similarity ranking
 - weekly scheduled crawl/index updates
 - Streamlit search, records viewer, and scheduler update controls
+- document clustering with TF-IDF and K-Means
+- new document cluster prediction
 
 ## Tests
 

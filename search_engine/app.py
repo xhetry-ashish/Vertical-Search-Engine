@@ -1,8 +1,8 @@
-"""Streamlit interface for viewing crawled Pure Portal records."""
+"""Streamlit interface for the IR search and clustering assignment."""
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import sys
 from typing import Any
@@ -14,12 +14,20 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from search_engine.config import SearchEngineConfig
+from search_engine.clustering.dataset import build_sample_dataset
+from search_engine.clustering.text_clustering import fit_clustering_model, predict_cluster
 from search_engine.database.mongo import MongoConnection
 from search_engine.database.repositories import IndexRepository, PublicationRepository
+from search_engine.scheduler.gui_schedule import (
+    cancel_gui_update,
+    get_gui_schedule_state,
+    schedule_gui_update,
+)
 from search_engine.scheduler.weekly_update import ScheduledUpdateResult, run_update_once
 
 
 SORT_OPTIONS = ["newest", "oldest", "title", "recently crawled"]
+TASK_2_CLUSTER_COUNT = 3
 
 
 def local_timezone():
@@ -117,6 +125,12 @@ def load_search_results(query: str, limit: int, refresh_marker: int) -> list[dic
         return repository.search(query, limit=limit)
     finally:
         connection.close()
+
+
+@st.cache_data(ttl=300)
+def load_clustering_result(refresh_marker: int):
+    documents = build_sample_dataset()
+    return fit_clustering_model(documents, n_clusters=TASK_2_CLUSTER_COUNT)
 
 
 def render_metrics(data: dict) -> None:
@@ -295,16 +309,72 @@ def render_update_summary(result: ScheduledUpdateResult) -> None:
     st.caption(result.index_message)
 
 
+def build_local_datetime(date_value, time_value) -> datetime:
+    return datetime.combine(date_value, time_value).replace(tzinfo=local_timezone())
+
+
+def sync_completed_gui_schedule() -> None:
+    state = get_gui_schedule_state()
+    if state.status != "completed" or state.result is None:
+        return
+
+    completion_marker = f"{state.job_id}:{state.finished_at}"
+    if st.session_state.get("seen_gui_schedule_completion") == completion_marker:
+        return
+
+    st.session_state.seen_gui_schedule_completion = completion_marker
+    st.session_state.last_crawl_update_result = state.result
+    st.cache_data.clear()
+    st.session_state.refresh_marker += 1
+    st.rerun()
+
+
+def render_gui_schedule_state() -> None:
+    left, right = st.columns([3, 1])
+    with left:
+        st.subheader("Scheduled Run")
+    with right:
+        if st.button("Refresh Status", use_container_width=True):
+            st.rerun()
+
+    state = get_gui_schedule_state()
+    if state.status == "idle":
+        st.info("No crawl update is scheduled.")
+        return
+
+    first, second, third = st.columns(3)
+    first.metric("Status", state.status.title())
+    second.metric("Run At (Local)", format_datetime(state.scheduled_for))
+    third.metric("Publications", state.max_publications or 0)
+
+    if state.status == "waiting":
+        st.caption("The Streamlit server must remain running until the scheduled time.")
+        if st.button("Cancel Scheduled Run"):
+            cancel_gui_update()
+            st.rerun()
+    elif state.status == "running":
+        st.warning("Scheduled crawl update is running.")
+    elif state.status == "completed" and state.result is not None:
+        st.success("Scheduled crawl update completed.")
+        render_update_summary(state.result)
+    elif state.status == "failed":
+        st.error(f"Scheduled crawl update failed: {state.error}")
+    elif state.status == "cancelled":
+        st.info("Scheduled crawl update was cancelled.")
+
+
 def render_scheduler_tab() -> None:
     st.subheader("Scheduler")
+    sync_completed_gui_schedule()
 
     last_result = st.session_state.get("last_crawl_update_result")
     if last_result is not None:
         st.success("Last scheduled update completed.")
         render_update_summary(last_result)
 
-    st.caption("Run one crawler/index update from the GUI. The continuous weekly scheduler still runs from the terminal.")
+    st.caption("Run a crawler/index update now or schedule one for a local date and time.")
 
+    st.subheader("Crawl Settings")
     first, second, third = st.columns(3)
     max_listing_pages = first.number_input(
         "Listing Pages",
@@ -328,20 +398,124 @@ def render_scheduler_tab() -> None:
         step=1,
     )
 
-    if not st.button("Run Crawl Update", type="primary"):
+    if st.button("Run Crawl Update Now", type="primary"):
+        with st.spinner("Crawling Pure Portal and rebuilding the search index..."):
+            result = run_update_once(
+                max_listing_pages=int(max_listing_pages),
+                max_profile_pages=int(max_profile_pages),
+                max_publications=int(max_publications),
+            )
+
+        st.session_state.last_crawl_update_result = result
+        st.cache_data.clear()
+        st.session_state.refresh_marker += 1
+        st.rerun()
+
+    st.divider()
+    st.subheader("Schedule by Date and Time")
+    default_scheduled_at = datetime.now(local_timezone()) + timedelta(minutes=5)
+    date_column, time_column = st.columns(2)
+    scheduled_date = date_column.date_input(
+        "Run Date",
+        value=default_scheduled_at.date(),
+    )
+    scheduled_time = time_column.time_input(
+        "Run Time",
+        value=default_scheduled_at.time().replace(second=0, microsecond=0),
+        step=timedelta(minutes=1),
+        format="24h",
+    )
+
+    if st.button("Schedule Crawl Update"):
+        scheduled_for = build_local_datetime(scheduled_date, scheduled_time)
+        try:
+            schedule_gui_update(
+                scheduled_for=scheduled_for,
+                max_listing_pages=int(max_listing_pages),
+                max_profile_pages=int(max_profile_pages),
+                max_publications=int(max_publications),
+            )
+        except Exception as exc:
+            st.error(f"Could not schedule crawl update: {exc}")
+        else:
+            st.success(f"Crawl update scheduled for {format_datetime(scheduled_for)}.")
+
+    render_gui_schedule_state()
+
+
+def render_cluster_summaries(summaries: list[dict]) -> None:
+    rows = []
+    for summary in summaries:
+        rows.append(
+            {
+                "Cluster": summary["cluster"],
+                "Documents": summary["documents"],
+                "Majority Category": summary["majority_category"],
+                "Top Terms": ", ".join(summary["top_terms"]),
+                "Category Counts": summary["category_counts"],
+            }
+        )
+    st.dataframe(rows, hide_index=True, use_container_width=True)
+
+
+def build_balanced_preview_rows(documents: list[dict], per_category: int = 10) -> list[dict]:
+    rows = []
+    category_counts: dict[str, int] = {}
+
+    for document in documents:
+        category = document.get("category", "Unknown")
+        category_counts[category] = category_counts.get(category, 0)
+        if category_counts[category] >= per_category:
+            continue
+
+        rows.append(document)
+        category_counts[category] += 1
+
+    return rows
+
+
+def render_clustering_tab(refresh_marker: int) -> None:
+    st.subheader("Document Clustering")
+    st.caption(
+        "Group Economics, Entertainment, and Politics documents into 3 clusters."
+    )
+
+    try:
+        result = load_clustering_result(refresh_marker)
+    except Exception as exc:
+        st.error(f"Clustering failed: {exc}")
         return
 
-    with st.spinner("Crawling Pure Portal and rebuilding the search index..."):
-        result = run_update_once(
-            max_listing_pages=int(max_listing_pages),
-            max_profile_pages=int(max_profile_pages),
-            max_publications=int(max_publications),
-        )
+    first, second, third, fourth = st.columns(4)
+    first.metric("Documents", len(result.documents))
+    second.metric("Vocabulary", len(result.vocabulary))
+    third.metric("Clusters", TASK_2_CLUSTER_COUNT)
+    fourth.metric("Iterations", result.iterations)
 
-    st.session_state.last_crawl_update_result = result
-    st.cache_data.clear()
-    st.session_state.refresh_marker += 1
-    st.rerun()
+    st.subheader("Cluster Summary")
+    render_cluster_summaries(result.cluster_summaries)
+
+    st.subheader("Assign New Document")
+    new_document = st.text_area(
+        "Document text",
+        placeholder="Example: The government announced new tax policy before the election debate.",
+        height=120,
+    )
+
+    if new_document.strip():
+        prediction = predict_cluster(new_document, result)
+        if prediction["cluster"] is None:
+            st.info("The document does not contain enough known terms to assign a cluster.")
+        else:
+            col1, col2, col3 = st.columns(3)
+            col1.metric("Predicted Cluster", prediction["cluster"])
+            col2.metric("Likely Category", prediction["majority_category"])
+            col3.metric("Distance", f"{prediction['distance']:.4f}")
+            st.caption("Cluster terms: " + ", ".join(prediction["top_terms"]))
+
+    with st.expander("Document Collection Preview"):
+        preview_rows = build_balanced_preview_rows(result.documents)
+        st.dataframe(preview_rows, hide_index=True, use_container_width=True)
 
 
 def render_crawl_runs_tab(crawl_runs: list[dict]) -> None:
@@ -359,11 +533,12 @@ def render_crawl_runs_tab(crawl_runs: list[dict]) -> None:
 
 def main() -> None:
     st.set_page_config(
-        page_title="Coventry Pure Portal Search Engine",
+        page_title="Information Retrieval Search and Clustering System",
         layout="wide",
     )
 
-    st.title("Coventry Pure Portal Search Engine")
+    st.title("Information Retrieval Search and Clustering System")
+    st.caption("Coventry Pure Portal search and document clustering in one interface.")
 
     if "refresh_marker" not in st.session_state:
         st.session_state.refresh_marker = 0
@@ -379,8 +554,8 @@ def main() -> None:
     st.caption(f"Database: {data['database_name']}")
     render_metrics(data)
 
-    search_tab, publications_tab, authors_tab, crawl_runs_tab, scheduler_tab = st.tabs(
-        ["Search", "Publications", "Authors", "Crawl Runs", "Scheduler"]
+    search_tab, publications_tab, authors_tab, crawl_runs_tab, scheduler_tab, clustering_tab = st.tabs(
+        ["Search", "Publications", "Authors", "Crawl Runs", "Scheduler", "Document Clustering"]
     )
     with search_tab:
         render_search_tab(st.session_state.refresh_marker)
@@ -395,6 +570,8 @@ def main() -> None:
             render_scheduler_tab()
         except Exception as exc:
             st.error(f"Scheduler update failed: {exc}")
+    with clustering_tab:
+        render_clustering_tab(st.session_state.refresh_marker)
 
 
 if __name__ == "__main__":
