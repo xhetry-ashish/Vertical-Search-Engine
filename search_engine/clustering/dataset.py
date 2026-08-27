@@ -1,6 +1,9 @@
-"""Sample Task 2 document dataset for clustering."""
+""" Task 2 document dataset for clustering."""
 
 from __future__ import annotations
+
+
+DATASET_VERSION = "task2-topic-separated-v2"
 
 
 ECONOMICS_TOPICS = [
@@ -59,19 +62,19 @@ POLITICS_TOPICS = [
 
 TEMPLATES = {
     "Economics": [
-        "Economics report: {a} influenced {b} as analysts watched {c} across markets.",
-        "A business update explained how {b} responded to {a} while households adjusted to {c}.",
-        "Financial researchers linked {a}, {b}, and {c} to changes in growth and investment.",
+        "Economics finance market {a}, {b}, and {c} inflation interest investment trade bank company price wage productivity growth.",
+        "Business economy banking {a}, {b}, and {c} investor credit consumer export import revenue employment household retail.",
+        "Financial monetary fiscal {a}, {b}, and {c} debt mortgage manufacturing supply chain output budget property market.",
     ],
     "Entertainment": [
-        "Entertainment report: the {a} highlighted {b} and generated attention from {c}.",
-        "Reviewers discussed how {b} shaped the {a} while fans followed updates from {c}.",
-        "Culture writers connected {a}, {b}, and {c} in coverage of the entertainment industry.",
+        "Entertainment film music {a}, {b}, and {c} audience cinema actor performer festival award celebrity streaming theatre.",
+        "Culture media television {a}, {b}, and {c} album concert comedy game gallery fans critics red carpet box office.",
+        "Creative arts performance {a}, {b}, and {c} director musician choreography stage animation documentary reality show review.",
     ],
     "Politics": [
-        "Politics report: the {a} focused on {b} as {c} responded to the proposal.",
-        "Government coverage explained how {b} affected the {a} while {c} prepared statements.",
-        "Political analysts linked {a}, {b}, and {c} to wider public policy debates.",
+        "Politics government parliament {a}, {b}, and {c} legislation election minister party voter law senate cabinet policy campaign.",
+        "Public policy state {a}, {b}, and {c} opposition diplomat council committee constitutional immigration defence judicial reform.",
+        "Government political authority {a}, {b}, and {c} debate bill official mayoral anticorruption national local service rule.",
     ],
 }
 

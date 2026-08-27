@@ -14,7 +14,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from search_engine.config import SearchEngineConfig
-from search_engine.clustering.dataset import build_sample_dataset
+from search_engine.clustering.dataset import DATASET_VERSION, build_sample_dataset
 from search_engine.clustering.text_clustering import fit_clustering_model, predict_cluster
 from search_engine.database.mongo import MongoConnection
 from search_engine.database.repositories import IndexRepository, PublicationRepository
@@ -128,7 +128,7 @@ def load_search_results(query: str, limit: int, refresh_marker: int) -> list[dic
 
 
 @st.cache_data(ttl=300)
-def load_clustering_result(refresh_marker: int):
+def load_clustering_result(refresh_marker: int, dataset_version: str):
     documents = build_sample_dataset()
     return fit_clustering_model(documents, n_clusters=TASK_2_CLUSTER_COUNT)
 
@@ -143,6 +143,12 @@ def render_metrics(data: dict) -> None:
     third.metric("Crawl Runs", data["crawl_run_count"])
     fourth.metric("Index Terms", data["index_term_count"])
     fifth.metric("Latest Crawl (Local)", latest_run_time)
+
+
+def render_search_engine_overview(data: dict) -> None:
+    st.caption(f"Database: {data['database_name']}")
+    render_metrics(data)
+    st.divider()
 
 
 def render_publication(publication: dict) -> None:
@@ -481,7 +487,7 @@ def render_clustering_tab(refresh_marker: int) -> None:
     )
 
     try:
-        result = load_clustering_result(refresh_marker)
+        result = load_clustering_result(refresh_marker, DATASET_VERSION)
     except Exception as exc:
         st.error(f"Clustering failed: {exc}")
         return
@@ -551,21 +557,23 @@ def main() -> None:
         st.error(f"MongoDB query failed: {exc}")
         return
 
-    st.caption(f"Database: {data['database_name']}")
-    render_metrics(data)
-
     search_tab, publications_tab, authors_tab, crawl_runs_tab, scheduler_tab, clustering_tab = st.tabs(
         ["Search", "Publications", "Authors", "Crawl Runs", "Scheduler", "Document Clustering"]
     )
     with search_tab:
+        render_search_engine_overview(data)
         render_search_tab(st.session_state.refresh_marker)
     with publications_tab:
+        render_search_engine_overview(data)
         render_publications_tab(data["years"], st.session_state.refresh_marker)
     with authors_tab:
+        render_search_engine_overview(data)
         render_authors(data["authors"])
     with crawl_runs_tab:
+        render_search_engine_overview(data)
         render_crawl_runs_tab(data["crawl_runs"])
     with scheduler_tab:
+        render_search_engine_overview(data)
         try:
             render_scheduler_tab()
         except Exception as exc:
